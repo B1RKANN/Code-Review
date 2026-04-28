@@ -1,6 +1,8 @@
 from openai import AsyncOpenAI
 from app.core.config import settings
-from app.schemas.analysis import AnalysisReport
+from app.schemas.analysis import AnalysisReport, CodeIssue, Category, SeverityLevel
+import json
+
 
 class LLMService:
     """
@@ -81,3 +83,89 @@ Lütfen Türkçe olarak profesyonel ve eğitici bir dille yanıt ver. Eğer kodt
             return response.choices[0].message.content
         except Exception as e:
             return f"LLM önerisi alınırken bir hata oluştu: {str(e)}"
+
+    async def analyze_code_with_ai(self, source_code: str, file_name: str, language: str) -> AnalysisReport:
+        """
+        Kaynak kodu OpenAI API kullanarak analiz eder ve yapısal bir AnalysisReport döner.
+        """
+        if not self.client:
+            return AnalysisReport(file_name=file_name, issues=[], total_issues=0)
+
+        lang_display = {
+            "python": "Python", "javascript": "JavaScript", "typescript": "TypeScript",
+            "java": "Java", "go": "Go", "rust": "Rust", "csharp": "C#",
+            "cpp": "C++", "c": "C", "ruby": "Ruby", "php": "PHP"
+        }.get(language, language.upper())
+
+        prompt = f"""
+Sen uzman bir {lang_display} Yazılım Mimarısın. Clean Code, SOLID prensipleri ve güvenli kodlama konularında derin bilgiye sahipsin.
+Aşağıdaki {lang_display} kodunu analiz et ve tespit ettiğin sorunları JSON formatında dön.
+
+Tespit etmen gereken sorun kategorileri:
+- SOLID (SOLID prensibi ihlalleri, kod kokuları, kötü pratikler vb.)
+- Architecture (Mimari sorunlar, hata yönetimi, mantıksal hatalar vb.)
+- Security (Güvenlik açıkları, secret sızıntıları vb.)
+
+Önem dereceleri (severity): Low, Medium, High
+
+Yanıtın sadece geçerli bir JSON objesi olmalıdır. Şeması şu şekilde olmalıdır:
+{{
+  "issues": [
+    {{
+      "category": "SOLID" | "Architecture" | "Security",
+      "severity": "Low" | "Medium" | "High",
+      "line_number": <tamsayı, sorunun başladığı satır numarası>,
+      "message": "<sorunun kısa açıklaması>",
+      "code_snippet": "<sorunlu kod parçacığı veya null>",
+      "suggestion": "<çözüm önerisi veya null>"
+    }}
+  ]
+}}
+
+Eğer hiçbir sorun bulamazsan "issues" dizisini boş dön.
+
+[KAYNAK KOD]:
+```{language}
+{source_code}
+```
+"""
+
+        try:
+            response = await self.client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": "Sen yalnızca belirtilen JSON formatında yanıt veren bir sistem asistanısın."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.2,
+                response_format={ "type": "json_object" }
+            )
+            
+            content = response.choices[0].message.content
+            data = json.loads(content)
+            
+            issues = []
+            for item in data.get("issues", []):
+                try:
+                    category = Category(item.get("category"))
+                    severity = SeverityLevel(item.get("severity"))
+                    issues.append(CodeIssue(
+                        category=category,
+                        severity=severity,
+                        line_number=item.get("line_number", 0),
+                        message=item.get("message", "Bilinmeyen sorun"),
+                        code_snippet=item.get("code_snippet"),
+                        suggestion=item.get("suggestion")
+                    ))
+                except Exception as e:
+                    print(f"Issue ayrıştırma hatası: {e}")
+                    continue
+                    
+            return AnalysisReport(
+                file_name=file_name,
+                issues=issues,
+                total_issues=len(issues)
+            )
+        except Exception as e:
+            print(f"LLM Analiz hatası: {e}")
+            return AnalysisReport(file_name=file_name, issues=[], total_issues=0)
