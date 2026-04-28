@@ -24,3 +24,26 @@ class AnalysisReport(BaseModel):
     file_name: str
     issues: List[CodeIssue]
     total_issues: int
+
+
+class MetricStat(BaseModel):
+    label: str
+    value: str
+
+
+class FileMetric(BaseModel):
+    value: int
+    label: str
+    desc: str
+    stats: List[tuple[str, str]]
+
+
+class FileScore(BaseModel):
+    overall: int
+    status: str
+    statusKind: str
+    metrics: dict[str, FileMetric]
+
+
+class ProjectScores(BaseModel):
+    files: dict[str, FileScore]

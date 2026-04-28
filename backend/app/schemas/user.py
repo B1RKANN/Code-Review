@@ -21,3 +21,12 @@ class Token(BaseModel):
 
 class TokenPayload(BaseModel):
     sub: Optional[str] = None
+
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str
+
+class UserResponseWithToken(BaseModel):
+    user: UserResponse
+    access_token: str
+    token_type: str

@@ -15,7 +15,18 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
-    lifespan=lifespan
+    lifespan=lifespan,
+    openapi_extra={
+        "components": {
+            "securitySchemes": {
+                "Bearer": {
+                    "type": "http",
+                    "scheme": "bearer",
+                    "bearerFormat": "JWT"
+                }
+            }
+        }
+    }
 )
 
 # Masaüstü ve Web arayüzleri için CORS ayarları

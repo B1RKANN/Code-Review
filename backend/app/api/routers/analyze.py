@@ -1,5 +1,5 @@
-from fastapi import APIRouter, Depends, UploadFile, File, BackgroundTasks, HTTPException
-from typing import List
+from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, Security, Query
+from typing import List, Optional
 from bson import ObjectId
 from app.api.deps import get_current_user
 from app.models.user import UserInDB
@@ -7,6 +7,7 @@ from app.models.report import ReportInDB
 from app.db.mongodb import get_db
 from app.analyzers.engine import AnalysisEngine
 from app.services.llm import LLMService
+from app.schemas.analysis import FileScore, FileMetric, ProjectScores
 
 router = APIRouter()
 
@@ -39,41 +40,99 @@ async def process_analysis(source_code: str, file_name: str, user_id: ObjectId, 
     except Exception as e:
         print(f"Arka plan analiz işlemi başarısız oldu: {str(e)}")
 
+SUPPORTED_EXTENSIONS = {
+    '.py': 'python',
+    '.js': 'javascript',
+    '.ts': 'typescript',
+    '.jsx': 'javascript',
+    '.tsx': 'typescript',
+    '.java': 'java',
+    '.cpp': 'cpp',
+    '.c': 'c',
+    '.h': 'c',
+    '.hpp': 'cpp',
+    '.go': 'go',
+    '.rs': 'rust',
+    '.rb': 'ruby',
+    '.php': 'php',
+    '.cs': 'csharp',
+    '.swift': 'swift',
+    '.kt': 'kotlin',
+    '.scala': 'scala',
+    '.lua': 'lua',
+    '.r': 'r',
+    '.sql': 'sql',
+    '.sh': 'shell',
+    '.bash': 'shell',
+    '.zsh': 'shell',
+    '.ps1': 'powershell',
+    '.ex': 'elixir',
+    '.exs': 'elixir',
+    '.erl': 'erlang',
+    '.hs': 'haskell',
+    '.clj': 'clojure',
+    '.cljs': 'clojure',
+    '.fs': 'fsharp',
+    '.fsx': 'fsharp',
+    '.dart': 'dart',
+    '.vue': 'vue',
+    '.svelte': 'svelte',
+}
+
+
 @router.post("/upload")
 async def upload_and_analyze(
-    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    current_user: UserInDB = Depends(get_current_user),
+    current_user: UserInDB = Security(get_current_user),
     db = Depends(get_db)
 ):
     """
-    Kullanıcıdan gelen Python kodunu kabul edip, analizi arka planda başlatır.
-    Masaüstü uygulamasına beklemeden bir 'işleme alındı' mesajı döner.
+    Kullanıcıdan gelen kodu kabul edip, analizi çalıştırıp sonucu döner.
     """
-    if not file.filename.endswith('.py'):
-        raise HTTPException(status_code=400, detail="Sadece .py uzantılı Python dosyaları desteklenmektedir.")
+    file_ext = '.' + file.filename.rsplit('.', 1)[-1] if '.' in file.filename else ''
+    if file_ext not in SUPPORTED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Desteklenmeyen dosya uzantısı. Desteklenen uzantılar: {', '.join(SUPPORTED_EXTENSIONS.keys())}"
+        )
     
-    # Dosya içeriğini oku
     content = await file.read()
     try:
         source_code = content.decode('utf-8')
     except UnicodeDecodeError:
         raise HTTPException(status_code=400, detail="Dosya utf-8 formatında değil.")
 
-    # Background görevini kuyruğa ekle
-    background_tasks.add_task(
-        process_analysis,
-        source_code,
-        file.filename,
-        current_user.id,
-        db
+    language = SUPPORTED_EXTENSIONS.get(file_ext, 'python')
+    
+    # AST analizi sadece Python dosyaları için çalışır
+    # Diğer diller için boş rapor döner, LLM analizi yapılır
+    if language == "python":
+        report = ast_engine.analyze_code(source_code, file.filename)
+    else:
+        from app.schemas.analysis import AnalysisReport
+        report = AnalysisReport(file_name=file.filename, issues=[], total_issues=0)
+    
+    suggestions = await llm_service.generate_suggestions(source_code, report, language=language)
+
+    db_report = ReportInDB(
+        user_id=current_user.id,
+        file_name=file.filename,
+        report_data=report,
+        llm_suggestions=suggestions
     )
     
-    return {"message": f"{file.filename} analizi başlatıldı. Sonuçlar birazdan hazır olacak."}
+    result = await db["reports"].insert_one(db_report.model_dump(by_alias=True, exclude={"id"}))
+    
+    return {
+        "report_id": str(result.inserted_id),
+        "file_name": file.filename,
+        "report": report,
+        "llm_suggestions": suggestions
+    }
 
 @router.get("/reports", response_model=List[dict])
 async def get_my_reports(
-    current_user: UserInDB = Depends(get_current_user),
+    current_user: UserInDB = Security(get_current_user),
     db = Depends(get_db)
 ):
     """
