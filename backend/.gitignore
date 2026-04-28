@@ -1,0 +1,25 @@
+# Ortam Değişkenleri
+.env
+.env.local
+
+# Python Sanal Ortam
+venv/
+env/
+ENV/
+.venv/
+
+# Derlenmiş Python dosyaları
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Editörler ve IDE'ler
+.vscode/
+.idea/
+*.swp
+*.swo
