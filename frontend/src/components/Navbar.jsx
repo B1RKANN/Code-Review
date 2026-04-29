@@ -2,14 +2,17 @@ import React, { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Shield, Menu, X } from 'lucide-react'
 
-const navLinks = [
+const baseNavLinks = [
   { label: 'Product', href: '#product' },
   { label: 'Features', href: '#features' },
   { label: 'Pricing', href: '#pricing' },
-  { label: 'Sign In', href: '#login' },
 ]
 
-export default function Navbar() {
+export default function Navbar({ currentRoute, isAuthenticated, setIsAuthenticated }) {
+  const navLinks = [
+    ...baseNavLinks,
+    isAuthenticated ? { label: 'Profile', href: '#profile' } : { label: 'Sign In', href: '#login' }
+  ]
   const [scrolled, setScrolled] = useState(false)
   const [mobileOpen, setMobileOpen] = useState(false)
 
@@ -33,7 +36,7 @@ export default function Navbar() {
       <div className="max-w-7xl mx-auto px-6 lg:px-8">
         <div className="flex items-center justify-between h-16 lg:h-[72px]">
           {/* Logo */}
-          <a href="#" className="flex items-center gap-2.5 group">
+          <a href="#home" className="flex items-center gap-2.5 group">
             <div className="relative">
               <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-electric to-violet flex items-center justify-center shadow-lg shadow-electric/20 group-hover:shadow-electric/40 transition-shadow duration-300">
                 <Shield className="w-5 h-5 text-white" />

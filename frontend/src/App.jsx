@@ -1,4 +1,4 @@
-import React from 'react'
+import React, { useState, useEffect } from 'react'
 import Navbar from './components/Navbar'
 import Hero from './components/Hero'
 import LivePreview from './components/LivePreview'
@@ -6,8 +6,26 @@ import FeatureGrid from './components/FeatureGrid'
 import Pricing from './components/Pricing'
 import AuthSection from './components/AuthSection'
 import Footer from './components/Footer'
+import Profile from './components/Profile'
 
 export default function App() {
+  const [currentRoute, setCurrentRoute] = useState(window.location.hash || '#home')
+  const [isAuthenticated, setIsAuthenticated] = useState(localStorage.getItem('auth') === 'true')
+
+  useEffect(() => {
+    const handleHashChange = () => {
+      const hash = window.location.hash || '#home'
+      if (hash === '#profile' && localStorage.getItem('auth') !== 'true') {
+        window.location.hash = '#login'
+        return
+      }
+      setCurrentRoute(hash)
+    }
+    handleHashChange()
+    window.addEventListener('hashchange', handleHashChange)
+    return () => window.removeEventListener('hashchange', handleHashChange)
+  }, [])
+
   return (
     <div className="relative min-h-screen bg-midnight overflow-x-hidden">
       {/* Background ambient orbs */}
@@ -21,12 +39,19 @@ export default function App() {
       </div>
 
       <div className="relative z-10">
-        <Navbar />
-        <Hero />
-        <LivePreview />
-        <FeatureGrid />
-        <Pricing />
-        <AuthSection />
+        <Navbar currentRoute={currentRoute} isAuthenticated={isAuthenticated} setIsAuthenticated={setIsAuthenticated} />
+        {currentRoute === '#profile' ? (
+          <Profile setIsAuthenticated={setIsAuthenticated} />
+        ) : currentRoute === '#login' ? (
+          <AuthSection setIsAuthenticated={setIsAuthenticated} />
+        ) : (
+          <>
+            <Hero />
+            <LivePreview />
+            <FeatureGrid />
+            <Pricing />
+          </>
+        )}
         <Footer />
       </div>
     </div>

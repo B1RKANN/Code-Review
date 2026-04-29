@@ -2,11 +2,20 @@ import React, { useRef, useState } from 'react'
 import { motion, useInView, AnimatePresence } from 'framer-motion'
 import { LogIn, UserPlus, Mail, Lock, User, ArrowRight, Eye, EyeOff } from 'lucide-react'
 
-export default function AuthSection() {
+export default function AuthSection({ setIsAuthenticated }) {
   const ref = useRef(null)
   const isInView = useInView(ref, { once: true, margin: '-80px' })
   const [activeTab, setActiveTab] = useState('login')
   const [showPassword, setShowPassword] = useState(false)
+
+  const handleSubmit = (e) => {
+    e.preventDefault()
+    // Simulate authentication
+    localStorage.setItem('auth', 'true')
+    setIsAuthenticated(true)
+    // Redirect to profile upon successful sign in/register
+    window.location.hash = '#profile'
+  }
 
   return (
     <section id="login" className="relative py-20 lg:py-32">
@@ -92,7 +101,7 @@ export default function AuthSection() {
                     exit={{ opacity: 0, y: -12 }}
                     transition={{ duration: 0.25 }}
                   >
-                    <div className="space-y-4">
+                    <form onSubmit={handleSubmit} className="space-y-4">
                       {/* Name field — only for register */}
                       {activeTab === 'register' && (
                         <div>
@@ -157,11 +166,11 @@ export default function AuthSection() {
                       )}
 
                       {/* Submit */}
-                      <button className="shimmer-btn w-full py-3 px-6 rounded-xl text-sm font-semibold bg-electric hover:bg-electric-glow text-white shadow-lg shadow-electric/25 hover:shadow-electric/40 transition-all duration-300 cursor-pointer mt-2">
+                      <button type="submit" className="shimmer-btn w-full py-3 px-6 rounded-xl text-sm font-semibold bg-electric hover:bg-electric-glow text-white shadow-lg shadow-electric/25 hover:shadow-electric/40 transition-all duration-300 cursor-pointer mt-2">
                         {activeTab === 'login' ? 'Sign In' : 'Create Account'}
                       </button>
 
-                    </div>
+                    </form>
                   </motion.div>
                 </AnimatePresence>
               </div>
