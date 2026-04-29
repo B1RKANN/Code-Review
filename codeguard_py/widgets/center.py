@@ -68,7 +68,7 @@ class ScoresView(QWidget):
         self._gauges: list = []
         self._overall_gauge = None
 
-    def populate(self, path: str):
+    def populate(self, path: str, api_data: dict = None):
         # Temizle
         while self._lay.count():
             item = self._lay.takeAt(0)
@@ -78,8 +78,27 @@ class ScoresView(QWidget):
         self._gauges = []
         self._overall_gauge = None
 
-        score = FILE_SCORES.get(path, FILE_SCORES["default"])
-        findings = FILE_FINDINGS.get(path, FILE_FINDINGS["default"])
+        if api_data:
+            score = api_data.get("score", FILE_SCORES["default"])
+            findings = api_data.get("findings", [])
+        elif path and os.path.isabs(path):
+            # Gerçek dosya ama henüz taranmamış
+            score = {
+                "overall": 0,
+                "status": "Henüz taranmadı",
+                "statusKind": "info",
+                "metrics": {
+                    "security": {"label": "Güvenlik", "value": 0, "desc": "Tarama bekleniyor", "stats": []},
+                    "cleanCode": {"label": "Temiz Kod", "value": 0, "desc": "Tarama bekleniyor", "stats": []},
+                    "perf": {"label": "Performans", "value": 0, "desc": "Tarama bekleniyor", "stats": []},
+                    "robust": {"label": "Mimari", "value": 0, "desc": "Tarama bekleniyor", "stats": []},
+                }
+            }
+            findings = []
+        else:
+            # Mock veriler (demo modu için)
+            score = FILE_SCORES.get(path, FILE_SCORES["default"])
+            findings = FILE_FINDINGS.get(path, FILE_FINDINGS["default"])
 
         # Başlık
         hdr = QHBoxLayout(); hdr.setSpacing(14)
@@ -119,9 +138,9 @@ class ScoresView(QWidget):
         unit = QLabel("/ 100"); unit.setObjectName("unitLabel")
         big_row.addWidget(big); big_row.addWidget(unit); big_row.addStretch()
         mid.addLayout(big_row)
-        sk = score["statusKind"]
-        pill_bg = {"good": C.GOOD_SOFT, "warn": C.WARN_SOFT, "bad": C.BAD_SOFT}[sk]
-        pill_fg = {"good": C.GOOD, "warn": C.WARN, "bad": C.BAD}[sk]
+        sk = score.get("statusKind", "info")
+        pill_bg = {"good": C.GOOD_SOFT, "warn": C.WARN_SOFT, "bad": C.BAD_SOFT, "info": C.ACCENT_SOFT}.get(sk, C.ACCENT_SOFT)
+        pill_fg = {"good": C.GOOD, "warn": C.WARN, "bad": C.BAD, "info": C.ACCENT}.get(sk, C.ACCENT)
         pill = QLabel("  " + score["status"]); pill.setObjectName("statusPill")
         pill.setStyleSheet(
             f"background:{pill_bg}; color:{pill_fg}; border-radius:10px; "
@@ -167,8 +186,8 @@ class ScoresView(QWidget):
             row.setStyleSheet(f"QFrame {{ border-top: 1px solid {C.BORDER}; }}")
             rl = QHBoxLayout(row); rl.setContentsMargins(18, 12, 18, 12); rl.setSpacing(12)
             sev = fi["sev"]
-            sev_bg = {"h": C.BAD_SOFT, "m": C.WARN_SOFT, "l": C.ACCENT_SOFT}[sev]
-            sev_fg = {"h": C.BAD, "m": C.WARN, "l": C.ACCENT_STRONG}[sev]
+            sev_bg = {"h": C.BAD_SOFT, "m": C.WARN_SOFT, "l": C.ACCENT_SOFT}.get(sev, C.ACCENT_SOFT)
+            sev_fg = {"h": C.BAD, "m": C.WARN, "l": C.ACCENT_STRONG}.get(sev, C.ACCENT_STRONG)
             spill = QLabel(sev.upper()); spill.setObjectName("sevPill"); spill.setFixedWidth(30)
             spill.setAlignment(Qt.AlignmentFlag.AlignCenter)
             spill.setStyleSheet(
@@ -239,12 +258,12 @@ class CodeView(QWidget):
         self._aside_layout = al
         root.addWidget(aside)
 
-    def populate(self, path: str):
+    def populate(self, path: str, api_data: dict = None):
         fname = os.path.basename(path) if path else ""
         self.ftab.setText(f"  {fname}" if fname else "")
 
         # Gerçek dosya
-        if path and os.path.isabs(path) and os.path.isfile(path):
+        if not api_data and path and os.path.isabs(path) and os.path.isfile(path):
             try:
                 with open(path, encoding="utf-8", errors="replace") as f:
                     text = f.read()
@@ -255,8 +274,13 @@ class CodeView(QWidget):
             self._aside_layout.addStretch()
             return
 
-        # Mock veri
-        src = FILE_SOURCES.get(path, FILE_SOURCES["default"])
+        if api_data:
+            src = api_data.get("sources", [])
+            aside_list = api_data.get("aside", [])
+        else:
+            src = FILE_SOURCES.get(path, FILE_SOURCES["default"])
+            aside_list = FILE_ASIDE.get(path, FILE_ASIDE["default"])
+
         text = "\n".join(line for _, line, _ in src)
         self.edit.setPlainText(text)
 
@@ -275,7 +299,7 @@ class CodeView(QWidget):
 
         # Aside
         self._clear_aside()
-        for a in FILE_ASIDE.get(path, FILE_ASIDE["default"]):
+        for a in aside_list:
             box = QFrame(); box.setObjectName("asideIssue")
             bl = QVBoxLayout(box); bl.setContentsMargins(10, 8, 10, 10); bl.setSpacing(4)
             color = {"warn": C.WARN, "bad": C.BAD, "info": C.ACCENT}[a["sev"]]
@@ -359,11 +383,11 @@ class CenterPane(QFrame):
         self.btn_scores.clicked.connect(lambda: self.set_view("scores"))
         self.btn_code.clicked.connect(lambda: self.set_view("code"))
 
-    def set_active(self, path: str):
+    def set_active(self, path: str, api_data: dict = None):
         if not path:
             return
-        self.scores_view.populate(path)
-        self.code_view.populate(path)
+        self.scores_view.populate(path, api_data)
+        self.code_view.populate(path, api_data)
 
     def set_view(self, mode: str):
         if mode == "scores":

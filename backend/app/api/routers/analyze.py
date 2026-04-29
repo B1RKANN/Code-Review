@@ -7,7 +7,8 @@ from app.models.report import ReportInDB
 from app.db.mongodb import get_db
 from app.analyzers.engine import AnalysisEngine
 from app.services.llm import LLMService
-from app.schemas.analysis import FileScore, FileMetric, ProjectScores
+from app.schemas.analysis import FileScore, FileMetric, ProjectScores, FileAnalysisResult, Finding, Aside
+
 
 router = APIRouter()
 
@@ -100,7 +101,10 @@ async def upload_and_analyze(
     try:
         source_code = content.decode('utf-8')
     except UnicodeDecodeError:
-        raise HTTPException(status_code=400, detail="Dosya utf-8 formatında değil.")
+        try:
+            source_code = content.decode('utf-8-sig') # For BOM
+        except UnicodeDecodeError:
+            source_code = content.decode('latin-1', errors='ignore') # Fallback
 
     language = SUPPORTED_EXTENSIONS.get(file_ext, 'python')
     
@@ -148,6 +152,79 @@ async def get_my_reports(
     return reports
 
 
+@router.post("/analyze-file", response_model=FileAnalysisResult)
+async def analyze_single_file(
+    file: UploadFile = File(...)
+):
+    """
+    Masaüstü uygulaması için tek bir dosyanın analiz sonuçlarını döndürür.
+    Frontend'in beklediği score, findings, sources ve aside formatlarını sağlar.
+    """
+    content = await file.read()
+    try:
+        source_code = content.decode('utf-8')
+    except UnicodeDecodeError:
+        try:
+            source_code = content.decode('utf-8-sig') # For BOM
+        except UnicodeDecodeError:
+            source_code = content.decode('latin-1', errors='ignore') # Fallback
+
+    file_path = file.filename
+    file_ext = '.' + file_path.rsplit('.', 1)[-1] if '.' in file_path else ''
+    language = SUPPORTED_EXTENSIONS.get(file_ext, 'python')
+
+    if language == "python":
+        report = ast_engine.analyze_code(source_code, file_path)
+    else:
+        report = await llm_service.analyze_code_with_ai(source_code, file_path, language)
+
+    # Score calculation
+    score_data = _calculate_scores_from_report(report, language)
+    file_score = _build_file_score(score_data)
+
+    # Findings mapping
+    findings = []
+    for issue in report.issues:
+        sev = "h" if issue.severity.value == "High" else "m" if issue.severity.value == "Medium" else "l"
+        findings.append(Finding(
+            sev=sev,
+            title=issue.message,
+            loc=f"{file_path}:{issue.line_number}",
+            tag=issue.category.value.lower()
+        ))
+
+    # Sources mapping
+    lines = source_code.splitlines()
+    sources = []
+    for i, line in enumerate(lines, 1):
+        # find if there's an issue on this line
+        line_issues = [iss for iss in report.issues if iss.line_number == i]
+        status = None
+        if line_issues:
+            highest_sev = max(line_issues, key=lambda x: {"Low": 1, "Medium": 2, "High": 3}[x.severity.value]).severity.value
+            status = "bad" if highest_sev == "High" else "warn" if highest_sev == "Medium" else "info"
+        sources.append((i, line, status))
+
+    # Aside mapping
+    aside = []
+    for issue in report.issues:
+        sev = "bad" if issue.severity.value == "High" else "warn" if issue.severity.value == "Medium" else "info"
+        aside.append(Aside(
+            sev=sev,
+            line=issue.line_number,
+            title=issue.message[:50] + "..." if len(issue.message) > 50 else issue.message,
+            desc=issue.message,
+            fix=issue.suggestion
+        ))
+
+    return FileAnalysisResult(
+        score=file_score,
+        findings=findings,
+        sources=sources,
+        aside=aside
+    )
+
+
 @router.post("/scores", response_model=ProjectScores)
 async def get_scores(
     file: UploadFile = File(...),
@@ -160,7 +237,10 @@ async def get_scores(
     try:
         source_code = content.decode('utf-8')
     except UnicodeDecodeError:
-        raise HTTPException(status_code=400, detail="Dosya utf-8 formatında değil.")
+        try:
+            source_code = content.decode('utf-8-sig') # For BOM
+        except UnicodeDecodeError:
+            source_code = content.decode('latin-1', errors='ignore') # Fallback
 
     file_path = file.filename
     file_ext = '.' + file_path.rsplit('.', 1)[-1] if '.' in file_path else ''
@@ -192,6 +272,50 @@ def _build_file_score(data: dict) -> FileScore:
         metrics=metrics
     )
 
+
+from pydantic import BaseModel
+
+class ChatRequest(BaseModel):
+    message: str
+    file_path: str
+    source_code: str
+
+@router.post("/chat")
+async def chat_about_file(request: ChatRequest):
+    """
+    Masaüstü uygulamasından gelen chat mesajlarına yanıt üretir.
+    """
+    if not llm_service.client:
+        return {"reply": "LLM yapılandırılmadığı için AI yanıt veremiyor."}
+    
+    file_ext = '.' + request.file_path.rsplit('.', 1)[-1] if '.' in request.file_path else ''
+    language = SUPPORTED_EXTENSIONS.get(file_ext, 'python')
+    
+    prompt = f"""
+Sen CodeGuard AI adında uzman bir yazılım mimarısın.
+Kullanıcı şu an {request.file_path} adlı {language} dosyasını inceliyor.
+Kullanıcının sorusu: {request.message}
+
+İncelenen Kod:
+```{language}
+{request.source_code}
+```
+
+Lütfen profesyonel, eğitici ve yardımcı bir dille Türkçe olarak yanıt ver.
+Yanıtın HTML formatında (sadece <p>, <b>, <code>, <pre> etiketleri kullanarak) biçimlendirilmiş olsun.
+"""
+    try:
+        response = await llm_service.client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "Sen CodeGuard AI asistanısın. Yanıtlarını basit HTML etiketleriyle formatla."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.3,
+        )
+        return {"reply": response.choices[0].message.content}
+    except Exception as e:
+        return {"reply": f"<p>Bir hata oluştu: {str(e)}</p>"}
 
 def _calculate_scores_from_report(report, language: str) -> dict:
     from app.schemas.analysis import SeverityLevel, Category

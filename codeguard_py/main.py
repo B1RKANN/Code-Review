@@ -24,6 +24,19 @@ from widgets.command_palette import CommandPalette
 from widgets.toast import ToastManager
 from widgets.welcome import WelcomeScreen
 from data import PROJECT, FILE_TREE, FILE_SCORES
+from api_client import analyze_file
+from PyQt6.QtCore import QThread, pyqtSignal
+
+class ScanWorker(QThread):
+    finished = pyqtSignal(dict)
+    
+    def __init__(self, file_path: str):
+        super().__init__()
+        self.file_path = file_path
+        
+    def run(self):
+        result = analyze_file(self.file_path)
+        self.finished.emit(result if result else {})
 
 
 # ---------- Yardımcı ----------
@@ -114,6 +127,7 @@ class CodeGuardWindow(QMainWindow):
         self.active_path = ""
         self.view_mode = "scores"
         self.scanning = False
+        self._api_cache = {}  # Dosya bazlı tarama sonuçlarını önbellekle
 
         self.toasts = ToastManager(self)
 
@@ -252,6 +266,7 @@ class CodeGuardWindow(QMainWindow):
         self._project_name = ""
         self._project_root = None
         self.active_path = ""
+        self._api_cache.clear()
         self.setWindowTitle("CodeGuard")
         self._stack.setCurrentIndex(0)
 
@@ -312,27 +327,56 @@ class CodeGuardWindow(QMainWindow):
     def refresh_for_path(self):
         if not self.active_path:
             return
-        score = FILE_SCORES.get(self.active_path, FILE_SCORES["default"])
+        
+        api_data = self._api_cache.get(self.active_path)
+        if api_data:
+            score = api_data.get("score", FILE_SCORES["default"])
+            overall = score.get("overall", 0)
+        elif os.path.isabs(self.active_path):
+            overall = 0
+        else:
+            score = FILE_SCORES.get(self.active_path, FILE_SCORES["default"])
+            overall = score["overall"]
+
         self.titlebar.set_breadcrumb(self.active_path, self._project_name)
-        self.center.set_active(self.active_path)
+        self.center.set_active(self.active_path, api_data)
         self.chat.set_active(self.active_path)
-        self.statusbar.set_score(self.active_path, score["overall"])
+        self.statusbar.set_score(self.active_path, overall)
 
     def run_scan(self):
-        if self.scanning:
+        if self.scanning or not self.active_path:
             return
         self.scanning = True
         self.center.set_scanning(True)
-        fname = os.path.basename(self.active_path) if self.active_path else "dosya"
-        self.toasts.push("Tarama başladı", f"{fname} analiz ediliyor", kind="info")
-        from PyQt6.QtCore import QTimer
-        QTimer.singleShot(2000, self._scan_done)
+        self.toasts.push("Tarama başlatıldı", "Yapay zeka analiz ediyor…", kind="info")
+        
+        # Sadece mock data çalışırken yapay delay (path absolute değilse)
+        if not os.path.isabs(self.active_path):
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(2000, self._scan_done)
+            return
 
-    def _scan_done(self):
+        self._worker = ScanWorker(self.active_path)
+        self._worker.finished.connect(self._scan_done)
+        self._worker.start()
+
+    def _scan_done(self, api_data: dict = None):
+        print(f"_scan_done called with api_data: {bool(api_data)} for {self.active_path}")
+        if api_data:
+            print(f"api_data keys: {api_data.keys()}")
+            
         self.scanning = False
         self.center.set_scanning(False)
-        self.center.replay_animations()
-        self.toasts.push("Tarama tamamlandı", "Skorlar güncellendi", kind="good")
+        
+        if api_data:
+            self._api_cache[self.active_path] = api_data
+            self.center.set_active(self.active_path, api_data)
+            score = api_data.get("score", {})
+            self.statusbar.set_score(self.active_path, score.get("overall", 0))
+            self.toasts.push("Tarama tamamlandı", "Skorlar gerçek verilerle güncellendi", kind="good")
+        else:
+            self.center.replay_animations()
+            self.toasts.push("Tarama başarısız", "Sunucudan veri alınamadı veya hata oluştu", kind="bad")
 
     def open_command_palette(self):
         if self._stack.currentIndex() != 1:

@@ -1,6 +1,6 @@
 """Sağ panel — AI chat (sahte cevap üretici, animasyonlu yazıyor göstergesi)."""
 import random
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QSize
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QSize, QThread
 from PyQt6.QtGui import QFont, QTextOption
 from PyQt6.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTextEdit,
@@ -9,73 +9,29 @@ from PyQt6.QtWidgets import (
 
 from theme import C
 from icons import make_icon
+from api_client import chat_about_file
 
 
 SUGGESTIONS = [
     "/scan tüm projeyi",
-    "/explain webhooks.py:42",
+    "Kodun karmaşıklığı nasıl?",
     "Async refactor öner",
-    "Test coverage'ı nasıl artırırım?",
+    "Güvenlik açığı var mı?",
 ]
 
-
-def respond_to(text: str, active_path: str):
-    t = text.lower()
-    if "imza" in t or "signature" in t or "webhook" in t:
-        return {
-            "text": (
-                "<p>Stripe webhook imza doğrulaması <code>construct_event</code> ile yapılmalı. "
-                "Önerilen değişiklik:</p>"
-            ),
-            "code": (
-                '@router.post("/stripe")\n'
-                'async def stripe_webhook(req: Request):\n'
-                '    payload = await req.body()\n'
-                '    sig = req.headers["stripe-signature"]\n'
-                '    try:\n'
-                '        event = stripe.Webhook.construct_event(\n'
-                '            payload, sig, settings.STRIPE_WEBHOOK_SECRET\n'
-                '        )\n'
-                '    except stripe.error.SignatureVerificationError:\n'
-                '        raise HTTPException(400, "invalid signature")\n'
-                '    return await process_event(event)'
-            ),
-            "after": "<p>Bu değişiklik <b>Ağ Güvenliği</b> skorunu <b>48 → 84</b>'e çıkaracak.</p>",
-            "actions": [("Patch'i uygula", True), ("Diff'i göster", False), ("Daha fazla açıkla", False)],
-        }
-    if "async" in t or "blok" in t or "perf" in t:
-        return {
-            "text": "<p>Senkron <code>requests.post</code> çağrısı event loop'u blokluyor. <code>httpx.AsyncClient</code>'a geçiş öneriyorum:</p>",
-            "code": (
-                "async def notify_partner(url, body):\n"
-                "    async with httpx.AsyncClient(timeout=5) as c:\n"
-                "        r = await c.post(url, json=body)\n"
-                "        return r.status_code"
-            ),
-            "after": "<p>Beklenen iyileşme: p95 latency <b>184ms → 42ms</b>.</p>",
-            "actions": [("Refactor'ı uygula", True), ("httpx ekle", False)],
-        }
-    if "scan" in t or "tara" in t:
-        return {
-            "text": "<p>Tarama yeniden başlatıldı. <b>14 dosya</b>, <b>1.247 satır</b> analiz ediliyor — birkaç saniye sürer.</p>",
-            "actions": [("İlerlemeyi izle", False)],
-        }
-    if "test" in t or "coverage" in t:
-        return {
-            "text": "<p>Mevcut coverage <b>%76</b>. En düşük 3 dosya:</p>",
-            "code": "app/api/webhooks.py     58%\napp/core/security.py    64%\napp/api/auth.py         71%",
-            "after": "<p>Webhook için <code>test_webhooks.py</code> dosyasında 4 yeni edge-case testi öneriyorum.</p>",
-            "actions": [("Test taslakları üret", True), ("Coverage detayı", False)],
-        }
-    return {
-        "text": (
-            f"<p>Anlıyorum. <code>{active_path}</code> bağlamında bu konuya bakıyorum — analiz sonucu kısaca: "
-            f"dosya genel olarak iyi durumda, ancak 2-3 küçük iyileştirme alanı tespit ettim.</p>"
-            f"<p>Hangi yöne odaklanmamı istersin: <b>güvenlik</b>, <b>performans</b>, yoksa <b>okunabilirlik</b>?</p>"
-        ),
-        "actions": [("Güvenlik", False), ("Performans", False), ("Okunabilirlik", False)],
-    }
-
+class ChatWorker(QThread):
+    finished = pyqtSignal(dict)
+    
+    def __init__(self, message: str, active_path: str):
+        super().__init__()
+        self.message = message
+        self.active_path = active_path
+        
+    def run(self):
+        # Gerçek backend çağrısı yap (yapay zeka entegrasyonu)
+        reply_html = chat_about_file(self.active_path, self.message)
+        payload = {"text": reply_html}
+        self.finished.emit(payload)
 
 class _MessageBubble(QFrame):
     action_clicked = pyqtSignal(str, bool)  # label, primary
@@ -206,13 +162,10 @@ class ChatPanel(QFrame):
         # Initial greeting
         self._add_message("assistant", {
             "text": (
-                "<p>Merhaba — ben <b>CodeGuard AI</b>. <code>fastapi-payments</code> projesi tarandı, "
-                "<b>4 dosyada</b> dikkat gerektiren bulgular var.</p>"
-                "<p>En kritik konu: <code>app/api/webhooks.py</code> içinde imza doğrulaması atlanmış "
-                "ve async fonksiyonda senkron HTTP çağrısı bulunuyor.</p>"
+                "<p>Merhaba — ben <b>CodeGuard AI</b>. Seçtiğiniz dosyalar veya kod blokları hakkında "
+                "bana sorular sorabilir, iyileştirme önerileri veya güvenlik analizi isteyebilirsiniz.</p>"
             ),
-            "actions": [("Webhooks dosyasını aç", True), ("Tüm bulguları listele", False), ("Auto-fix önerileri", False)],
-        }, target_file="app/api/webhooks.py")
+        })
 
     def set_active(self, path: str):
         self._active_path = path
@@ -237,14 +190,16 @@ class ChatPanel(QFrame):
         self._add_message("user", {"text": f"<p>{text}</p>"})
         # typing indicator
         typing_row = self._add_typing()
-        delay = 1100 + random.randint(0, 600)
-        QTimer.singleShot(delay, lambda: self._reply(text, typing_row))
+        
+        # Gerçek AI isteğini QThread ile başlat (UI donmasını önlemek için)
+        self._chat_worker = ChatWorker(text, self._active_path)
+        self._chat_worker.finished.connect(lambda payload: self._reply(payload, typing_row))
+        self._chat_worker.start()
 
-    def _reply(self, user_text: str, typing_row: QFrame):
+    def _reply(self, payload: dict, typing_row: QFrame):
         # remove typing row
         typing_row.setParent(None); typing_row.deleteLater()
-        reply = respond_to(user_text, self._active_path)
-        self._add_message("assistant", reply)
+        self._add_message("assistant", payload)
 
     def _add_typing(self):
         row = QFrame()

@@ -45,5 +45,28 @@ class FileScore(BaseModel):
     metrics: dict[str, FileMetric]
 
 
+class Finding(BaseModel):
+    sev: str
+    title: str
+    loc: str
+    tag: str
+
+
+class Aside(BaseModel):
+    sev: str
+    line: int
+    title: str
+    desc: str
+    fix: Optional[str] = None
+
+
+class FileAnalysisResult(BaseModel):
+    score: FileScore
+    findings: List[Finding]
+    sources: List[tuple[int, str, Optional[str]]]
+    aside: List[Aside]
+
+
 class ProjectScores(BaseModel):
     files: dict[str, FileScore]
+
