@@ -1,4 +1,8 @@
-import React, { useState, useEffect } from 'react'
+import React from 'react'
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { useAuth } from './services/authContext'
+
+// Landing page components
 import Navbar from './components/Navbar'
 import Hero from './components/Hero'
 import LivePreview from './components/LivePreview'
@@ -8,24 +12,10 @@ import AuthSection from './components/AuthSection'
 import Footer from './components/Footer'
 import Profile from './components/Profile'
 
-export default function App() {
-  const [currentRoute, setCurrentRoute] = useState(window.location.hash || '#home')
-  const [isAuthenticated, setIsAuthenticated] = useState(localStorage.getItem('auth') === 'true')
+// Pages
+import Dashboard from './pages/Dashboard'
 
-  useEffect(() => {
-    const handleHashChange = () => {
-      const hash = window.location.hash || '#home'
-      if (hash === '#profile' && localStorage.getItem('auth') !== 'true') {
-        window.location.hash = '#login'
-        return
-      }
-      setCurrentRoute(hash)
-    }
-    handleHashChange()
-    window.addEventListener('hashchange', handleHashChange)
-    return () => window.removeEventListener('hashchange', handleHashChange)
-  }, [])
-
+function LandingPage() {
   return (
     <div className="relative min-h-screen bg-midnight overflow-x-hidden">
       {/* Background ambient orbs */}
@@ -39,21 +29,50 @@ export default function App() {
       </div>
 
       <div className="relative z-10">
-        <Navbar currentRoute={currentRoute} isAuthenticated={isAuthenticated} setIsAuthenticated={setIsAuthenticated} />
-        {currentRoute === '#profile' ? (
-          <Profile setIsAuthenticated={setIsAuthenticated} />
-        ) : currentRoute === '#login' ? (
-          <AuthSection setIsAuthenticated={setIsAuthenticated} />
-        ) : (
-          <>
-            <Hero />
-            <LivePreview />
-            <FeatureGrid />
-            <Pricing />
-          </>
-        )}
+        <Navbar />
+        <Hero />
+        <LivePreview />
+        <FeatureGrid />
+        <Pricing />
+        <AuthSection />
         <Footer />
       </div>
     </div>
+  )
+}
+
+function ProtectedRoute({ children }) {
+  const { isAuthenticated, isLoading } = useAuth()
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-midnight flex items-center justify-center">
+        <div className="w-8 h-8 border-2 border-electric border-t-transparent rounded-full animate-spin" />
+      </div>
+    )
+  }
+
+  if (!isAuthenticated) {
+    return <Navigate to="/" replace />
+  }
+
+  return children
+}
+
+export default function App() {
+  return (
+    <BrowserRouter>
+      <Routes>
+        <Route path="/" element={<LandingPage />} />
+        <Route
+          path="/dashboard"
+          element={
+            <ProtectedRoute>
+              <Dashboard />
+            </ProtectedRoute>
+          }
+        />
+      </Routes>
+    </BrowserRouter>
   )
 }
