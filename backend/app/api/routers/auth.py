@@ -11,6 +11,9 @@ router = APIRouter()
 
 @router.post("/register", response_model=UserResponseWithToken)
 async def register(user_in: UserCreate, db = Depends(get_db)):
+    if db is None:
+        raise HTTPException(status_code=500, detail="Veritabanı bağlantısı yok.")
+        
     user = await db["users"].find_one({"email": user_in.email})
     if user:
         raise HTTPException(
@@ -47,6 +50,9 @@ async def register(user_in: UserCreate, db = Depends(get_db)):
 
 @router.post("/login", response_model=Token)
 async def login(login_request: LoginRequest, db = Depends(get_db)):
+    if db is None:
+        raise HTTPException(status_code=500, detail="Veritabanı bağlantısı yok.")
+        
     user = await db["users"].find_one({"email": login_request.email})
     if not user or not verify_password(login_request.password, user["hashed_password"]):
         raise HTTPException(

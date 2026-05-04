@@ -37,6 +37,11 @@ class LLMService:
             "cpp": "C++", "c": "C", "ruby": "Ruby", "php": "PHP"
         }.get(language, language.upper())
 
+        # Dosya çok büyükse chunk'lara ayır veya sınırlandır (Örn: max 15.000 karakter)
+        MAX_CHARS = 15000
+        if len(source_code) > MAX_CHARS:
+            source_code = source_code[:MAX_CHARS] + "\n\n... [KOD ÇOK UZUN OLDUĞU İÇİN KESİLDİ] ..."
+
         if has_issues:
             prompt = f"""
 Sen uzman bir {lang_display} Yazılım Mimarısın. Clean Code, SOLID prensipleri ve güvenli kodlama konularında derin bilgiye sahipsin.
@@ -96,6 +101,11 @@ Lütfen Türkçe olarak profesyonel ve eğitici bir dille yanıt ver. Eğer kodt
             "java": "Java", "go": "Go", "rust": "Rust", "csharp": "C#",
             "cpp": "C++", "c": "C", "ruby": "Ruby", "php": "PHP"
         }.get(language, language.upper())
+
+        # Dosya çok büyükse sınırlandır
+        MAX_CHARS = 15000
+        if len(source_code) > MAX_CHARS:
+            source_code = source_code[:MAX_CHARS] + "\n\n... [KOD ÇOK UZUN OLDUĞU İÇİN KESİLDİ] ..."
 
         prompt = f"""
 Sen uzman bir {lang_display} Yazılım Mimarısın. Clean Code, SOLID prensipleri ve güvenli kodlama konularında derin bilgiye sahipsin.

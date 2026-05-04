@@ -48,11 +48,28 @@ class SRPAnalyzer(BaseAnalyzer):
 
     def visit_FunctionDef(self, node: ast.FunctionDef):
         self._check_function_length(node)
+        self._check_ocp_violation(node)
         self.generic_visit(node)
         
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef):
         self._check_function_length(node)
+        self._check_ocp_violation(node)
         self.generic_visit(node)
+
+    def _check_ocp_violation(self, node: ast.AST):
+        # Open/Closed Principle kontrolü: Çok fazla if/elif dalı var mı?
+        # Bu genellikle strateji pattern veya polimorfizm ile çözülebilir.
+        if_count = sum(1 for n in ast.walk(node) if isinstance(n, ast.If))
+        if if_count > 4:
+            self.issues.append(
+                CodeIssue(
+                    category=Category.SOLID,
+                    severity=SeverityLevel.MEDIUM,
+                    line_number=node.lineno,
+                    message=f"Metot '{node.name}' içinde çok fazla if/elif bloğu var ({if_count}). OCP (Açık/Kapalı Prensibi) ihlali olabilir. Polimorfizm kullanmayı düşünün.",
+                    code_snippet=self.get_snippet(node.lineno)
+                )
+            )
 
     def _check_function_length(self, node: ast.AST):
         if hasattr(node, 'end_lineno') and node.end_lineno:

@@ -23,8 +23,9 @@ from widgets.statusbar import StatusBar
 from widgets.command_palette import CommandPalette
 from widgets.toast import ToastManager
 from widgets.welcome import WelcomeScreen
+from widgets.auth import AuthScreen
 from data import PROJECT, FILE_TREE, FILE_SCORES
-from api_client import analyze_file
+from api_client import analyze_file, get_auth_headers
 from PyQt6.QtCore import QThread, pyqtSignal
 
 class ScanWorker(QThread):
@@ -68,6 +69,17 @@ _SKIP_DIRS = {
     '.ruff_cache', 'target', '.idea', '.vs', '.vscode',
 }
 
+
+class FileTreeWorker(QThread):
+    finished = pyqtSignal(list)
+
+    def __init__(self, folder_path: str):
+        super().__init__()
+        self.folder_path = folder_path
+
+    def run(self):
+        tree = _build_file_tree(self.folder_path)
+        self.finished.emit(tree)
 
 def _build_file_tree(folder_path: str) -> list:
     def scan(path: str, name: str, depth: int = 0):
@@ -131,7 +143,7 @@ class CodeGuardWindow(QMainWindow):
 
         self.toasts = ToastManager(self)
 
-        # Dış yığın: hoş geldin (0) | editör (1)
+        # Dış yığın: hoş geldin (0) | editör (1) | auth (2)
         self._stack = QStackedWidget()
         self.setCentralWidget(self._stack)
 
@@ -191,11 +203,30 @@ class CodeGuardWindow(QMainWindow):
         el.addWidget(self.statusbar)
         self._stack.addWidget(editor)
 
+        # ── Sayfa 2: Auth ──
+        self.auth_screen = AuthScreen()
+        self.auth_screen.login_success.connect(self.on_login_success)
+        self._stack.addWidget(self.auth_screen)
+
         # Kısayollar
         QShortcut(QKeySequence("Ctrl+K"), self, activated=self.open_command_palette)
         QShortcut(QKeySequence("Meta+K"), self, activated=self.open_command_palette)
         QShortcut(QKeySequence("Ctrl+B"), self, activated=self.toggle_sidebar)
         QShortcut(QKeySequence("Ctrl+J"), self, activated=self.toggle_chat)
+
+        # Başlangıç durumu
+        self._check_auth_status()
+
+    def _check_auth_status(self):
+        token = get_auth_headers().get("Authorization")
+        if token:
+            self._stack.setCurrentIndex(0) # Hoş geldin
+        else:
+            self._stack.setCurrentIndex(2) # Auth sayfası
+
+    def on_login_success(self):
+        self._stack.setCurrentIndex(0) # Hoş geldin sayfasına geç
+        self.toasts.push("Giriş Başarılı", "Sisteme başarıyla giriş yaptınız.", "success")
 
     # ---------- Sayfa geçişi ----------
 
@@ -310,7 +341,12 @@ class CodeGuardWindow(QMainWindow):
     def _reload_folder(self):
         if not self._project_root or not os.path.isdir(self._project_root):
             return
-        tree = _build_file_tree(self._project_root)
+        # Asenkron dosya taraması başlat
+        self.file_worker_reload = FileTreeWorker(self._project_root)
+        self.file_worker_reload.finished.connect(self._on_file_tree_reloaded)
+        self.file_worker_reload.start()
+
+    def _on_file_tree_reloaded(self, tree: list):
         folder_name = os.path.basename(self._project_root)
         self.sidebar.load_project(tree, {"name": folder_name})
         self.toasts.push("Klasör güncellendi", f"{self._count_files(tree)} dosya", kind="info")

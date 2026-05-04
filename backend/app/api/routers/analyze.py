@@ -1,5 +1,6 @@
-from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, Security
-from typing import List
+from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, Security, Query
+from typing import List, Optional
+import asyncio
 from bson import ObjectId
 from app.api.deps import get_current_user
 from app.models.user import UserInDB
@@ -21,8 +22,8 @@ async def process_analysis(source_code: str, file_name: str, user_id: ObjectId, 
     Arka planda çalışacak olan AST analizi ve LLM isteklerini yürüten fonksiyon.
     """
     try:
-        # 1. AST Analizini Çalıştır
-        report = ast_engine.analyze_code(source_code, file_name)
+        # 1. AST Analizini Çalıştır (Asenkron - thread pool)
+        report = await asyncio.to_thread(ast_engine.analyze_code, source_code, file_name)
         
         # 2. LLM İyileştirme Önerilerini İste
         suggestions = await llm_service.generate_suggestions(source_code, report)
@@ -111,11 +112,14 @@ async def upload_and_analyze(
     # AST analizi sadece Python dosyaları için çalışır
     # Diğer diller için LLM üzerinden analiz yapılır
     if language == "python":
-        report = ast_engine.analyze_code(source_code, file.filename)
+        report = await asyncio.to_thread(ast_engine.analyze_code, source_code, file.filename)
+        suggestions = await llm_service.generate_suggestions(source_code, report, language=language)
     else:
+        # LLM üzerinden analiz ve önerileri tek bir aşamada halledebiliriz
+        # ya da analiz edip sonra öneri alırız, ancak LLM servisine optimize etmeliyiz.
+        # Şu an optimize ettiğimiz için:
         report = await llm_service.analyze_code_with_ai(source_code, file.filename, language)
-    
-    suggestions = await llm_service.generate_suggestions(source_code, report, language=language)
+        suggestions = await llm_service.generate_suggestions(source_code, report, language=language)
 
     db_report = ReportInDB(
         user_id=current_user.id,
@@ -135,14 +139,16 @@ async def upload_and_analyze(
 
 @router.get("/reports", response_model=List[dict])
 async def get_my_reports(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=100),
     current_user: UserInDB = Security(get_current_user),
     db = Depends(get_db)
 ):
     """
     Kullanıcının geçmiş analiz raporlarını listeler.
     """
-    cursor = db["reports"].find({"user_id": current_user.id}).sort("created_at", -1)
-    reports = await cursor.to_list(length=50)
+    cursor = db["reports"].find({"user_id": current_user.id}).sort("created_at", -1).skip(skip).limit(limit)
+    reports = await cursor.to_list(length=limit)
     
     # _id formatını frontend'in okuyabileceği string'e dönüştür
     for r in reports:
@@ -174,7 +180,7 @@ async def analyze_single_file(
     language = SUPPORTED_EXTENSIONS.get(file_ext, 'python')
 
     if language == "python":
-        report = ast_engine.analyze_code(source_code, file_path)
+        report = await asyncio.to_thread(ast_engine.analyze_code, source_code, file_path)
     else:
         report = await llm_service.analyze_code_with_ai(source_code, file_path, language)
 
@@ -247,7 +253,7 @@ async def get_scores(
     language = SUPPORTED_EXTENSIONS.get(file_ext, 'python')
 
     if language == "python":
-        report = ast_engine.analyze_code(source_code, file_path)
+        report = await asyncio.to_thread(ast_engine.analyze_code, source_code, file_path)
     else:
         report = await llm_service.analyze_code_with_ai(source_code, file_path, language)
 

@@ -30,22 +30,32 @@ class SecurityAnalyzer(BaseAnalyzer):
 
     def visit_Assign(self, node: ast.Assign):
         # Hardcoded şifre kontrolü
-        # Örn: password = "my_super_secret_password"
+        # Örn: password = "my_super_secret_password" veya user, password = ("admin", "123")
         if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
             for target in node.targets:
-                if isinstance(target, ast.Name):
-                    var_name = target.id.lower()
-                    if any(suspicious in var_name for suspicious in self.SUSPICIOUS_VAR_NAMES):
-                        self.issues.append(
-                            CodeIssue(
-                                category=Category.SECURITY,
-                                severity=SeverityLevel.HIGH,
-                                line_number=node.lineno,
-                                message=f"Olası hardcoded gizli bilgi tespit edildi: '{target.id}'. Hassas verileri çevre değişkenleri (environment variables) ile yönetin.",
-                                code_snippet=self.get_snippet(node.lineno)
-                            )
-                        )
+                self._check_target_for_secrets(target, node.lineno)
+        elif isinstance(node.value, ast.Tuple) or isinstance(node.value, ast.List):
+            # Tuple/List unpacking durumu için elemanları kontrol et
+            for target in node.targets:
+                if isinstance(target, ast.Tuple) or isinstance(target, ast.List):
+                    for el in target.elts:
+                        self._check_target_for_secrets(el, node.lineno)
+
         self.generic_visit(node)
+
+    def _check_target_for_secrets(self, target: ast.AST, lineno: int):
+        if isinstance(target, ast.Name):
+            var_name = target.id.lower()
+            if any(suspicious in var_name for suspicious in self.SUSPICIOUS_VAR_NAMES):
+                self.issues.append(
+                    CodeIssue(
+                        category=Category.SECURITY,
+                        severity=SeverityLevel.HIGH,
+                        line_number=lineno,
+                        message=f"Olası hardcoded gizli bilgi tespit edildi: '{target.id}'. Hassas verileri çevre değişkenleri (environment variables) ile yönetin.",
+                        code_snippet=self.get_snippet(lineno)
+                    )
+                )
 
     def get_results(self) -> List[CodeIssue]:
         return self.issues
