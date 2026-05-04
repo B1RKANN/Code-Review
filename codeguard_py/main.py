@@ -332,9 +332,11 @@ class CodeGuardWindow(QMainWindow):
         if api_data:
             score = api_data.get("score", FILE_SCORES["default"])
             overall = score.get("overall", 0)
-        elif os.path.isabs(self.active_path):
+        elif self._project_root is not None:
+            # Gerçek proje modu
             overall = 0
         else:
+            # Mock mod
             score = FILE_SCORES.get(self.active_path, FILE_SCORES["default"])
             overall = score["overall"]
 
@@ -349,22 +351,12 @@ class CodeGuardWindow(QMainWindow):
         self.scanning = True
         self.center.set_scanning(True)
         self.toasts.push("Tarama başlatıldı", "Yapay zeka analiz ediyor…", kind="info")
-        
-        # Sadece mock data çalışırken yapay delay (path absolute değilse)
-        if not os.path.isabs(self.active_path):
-            from PyQt6.QtCore import QTimer
-            QTimer.singleShot(2000, self._scan_done)
-            return
 
         self._worker = ScanWorker(self.active_path)
         self._worker.finished.connect(self._scan_done)
         self._worker.start()
 
     def _scan_done(self, api_data: dict = None):
-        print(f"_scan_done called with api_data: {bool(api_data)} for {self.active_path}")
-        if api_data:
-            print(f"api_data keys: {api_data.keys()}")
-            
         self.scanning = False
         self.center.set_scanning(False)
         

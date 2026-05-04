@@ -110,10 +110,14 @@ class ScoresView(QWidget):
         hdr.addLayout(title_box, 1)
 
         # Gerçek dosyalar için "mock analiz" notu
-        if os.path.isabs(path):
-            note = QLabel("demo analiz · gerçek API bağlı değil")
+        if not api_data and os.path.isabs(path):
+            note = QLabel("gerçek proje · tarama bekleniyor")
             note.setObjectName("metaPill")
             hdr.addWidget(note)
+        elif api_data:
+            for txt in ("gerçek analiz", "API", "başarılı"):
+                p = QLabel(txt); p.setObjectName("metaPill")
+                hdr.addWidget(p)
         else:
             for txt in ("scan · 2.4s", PROJECT["branch"], f"@{PROJECT['commit']}"):
                 p = QLabel(txt); p.setObjectName("metaPill")

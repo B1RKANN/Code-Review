@@ -14,14 +14,13 @@ def analyze_file(file_path: str) -> Dict[str, Any]:
             response = requests.post(f"{BACKEND_URL}/analyze-file", files=files)
             
         if response.status_code == 200:
-            print(f"API Success: {response.status_code} for {file_path}")
             return response.json()
         else:
             err_msg = response.text.encode('utf-8', 'replace').decode('utf-8')
-            print(f"API Error ({response.status_code}): {err_msg} for {file_path}")
+            print(f"API Error ({response.status_code}): {err_msg}")
             return None
     except Exception as e:
-        print(f"Connection Error: {e} for {file_path}")
+        print(f"Connection Error: {e}")
         return None
 
 def chat_about_file(file_path: str, message: str) -> str:
