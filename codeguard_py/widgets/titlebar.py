@@ -24,6 +24,8 @@ class TitleBar(QFrame):
     toggle_sidebar_requested = pyqtSignal()
     toggle_chat_requested = pyqtSignal()
 
+    logout_requested = pyqtSignal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("titlebar")
@@ -85,9 +87,13 @@ class TitleBar(QFrame):
 
         lay.addWidget(_vline())
 
-        # ── Git + bildirim + ayar ──
+        # ── Git + bildirim + ayar + çıkış ──
         for ico, tip in (("branch", "Git Dalı"), ("bell", "Bildirimler"), ("settings", "Ayarlar")):
             lay.addWidget(self._icon_btn(ico, tip))
+            
+        btn_logout = self._icon_btn("logOut", "Çıkış Yap")
+        btn_logout.clicked.connect(self.logout_requested.emit)
+        lay.addWidget(btn_logout)
 
     # ---------- Yardımcı ----------
 

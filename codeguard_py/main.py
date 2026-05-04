@@ -25,7 +25,7 @@ from widgets.toast import ToastManager
 from widgets.welcome import WelcomeScreen
 from widgets.auth import AuthScreen
 from data import PROJECT, FILE_TREE, FILE_SCORES
-from api_client import analyze_file, get_auth_headers
+from api_client import analyze_file, get_auth_headers, logout_user
 from PyQt6.QtCore import QThread, pyqtSignal
 
 class ScanWorker(QThread):
@@ -38,6 +38,27 @@ class ScanWorker(QThread):
     def run(self):
         result = analyze_file(self.file_path)
         self.finished.emit(result if result else {})
+
+class BatchScanWorker(QThread):
+    progress = pyqtSignal(str, int, int) # dosya_adi, su_anki_index, toplam
+    finished = pyqtSignal()
+    
+    def __init__(self, files: list):
+        super().__init__()
+        self.files = files
+        
+    def run(self):
+        total = len(self.files)
+        for i, file_path in enumerate(self.files, 1):
+            name = os.path.basename(file_path)
+            self.progress.emit(name, i, total)
+            result = analyze_file(file_path)
+            if result:
+                FILE_SCORES[file_path] = result.get("score")
+                FILE_FINDINGS[file_path] = result.get("findings", [])
+                FILE_SOURCES[file_path] = result.get("sources", [])
+                FILE_ASIDE[file_path] = result.get("aside", [])
+        self.finished.emit()
 
 
 # ---------- Yardımcı ----------
@@ -166,6 +187,7 @@ class CodeGuardWindow(QMainWindow):
         self.titlebar.open_terminal_requested.connect(self.open_terminal)
         self.titlebar.toggle_sidebar_requested.connect(self.toggle_sidebar)
         self.titlebar.toggle_chat_requested.connect(self.toggle_chat)
+        self.titlebar.logout_requested.connect(self.on_logout_requested)
 
         # Yeniden boyutlandırılabilir bölünmüş panel
         self._splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -227,6 +249,12 @@ class CodeGuardWindow(QMainWindow):
     def on_login_success(self):
         self._stack.setCurrentIndex(0) # Hoş geldin sayfasına geç
         self.toasts.push("Giriş Başarılı", "Sisteme başarıyla giriş yaptınız.", "success")
+
+    def on_logout_requested(self):
+        logout_user()
+        self.close_folder()
+        self._stack.setCurrentIndex(2) # Auth sayfasına geç
+        self.toasts.push("Çıkış Yapıldı", "Oturumunuz kapatıldı.", "info")
 
     # ---------- Sayfa geçişi ----------
 
@@ -382,15 +410,54 @@ class CodeGuardWindow(QMainWindow):
         self.statusbar.set_score(self.active_path, overall)
 
     def run_scan(self):
-        if self.scanning or not self.active_path:
+        if not self.active_path:
+            self.toasts.push("Hata", "Taranacak dosya seçilmedi.", "warn")
             return
+            
+        if self.scanning: return
         self.scanning = True
-        self.center.set_scanning(True)
-        self.toasts.push("Tarama başlatıldı", "Yapay zeka analiz ediyor…", kind="info")
+        
+        # Eğer bir klasör açıksa, o klasördeki tüm Python/JS dosyalarını topla
+        files_to_scan = []
+        if self._project_root:
+            files_to_scan = self._get_all_files(FILE_TREE)
+        
+        if len(files_to_scan) > 1:
+            self.statusbar.set_msg("Toplu tarama başlatıldı...")
+            self.toasts.push("Tarama Başladı", f"{len(files_to_scan)} dosya taranıyor...", "info")
+            self.center.set_scanning(True) # Yükleniyor durumu
+            
+            self.batch_worker = BatchScanWorker(files_to_scan)
+            self.batch_worker.progress.connect(self._on_batch_progress)
+            self.batch_worker.finished.connect(self._on_batch_finished)
+            self.batch_worker.start()
+        else:
+            self.statusbar.set_msg(f"Taranıyor: {os.path.basename(self.active_path)}")
+            self.center.set_scanning(True)
+            
+            self._worker = ScanWorker(self.active_path)
+            self._worker.finished.connect(self._scan_done)
+            self._worker.start()
 
-        self._worker = ScanWorker(self.active_path)
-        self._worker.finished.connect(self._scan_done)
-        self._worker.start()
+    def _get_all_files(self, nodes: list) -> list:
+        files = []
+        for n in nodes:
+            if n["type"] == "file":
+                ext = os.path.splitext(n["name"])[1].lower()
+                if ext in ['.py', '.js', '.ts', '.jsx', '.tsx']: # Desteklenen diller
+                    files.append(n["abs_path"])
+            elif n["type"] == "folder":
+                files.extend(self._get_all_files(n.get("children", [])))
+        return files
+
+    def _on_batch_progress(self, name: str, current: int, total: int):
+        self.statusbar.set_msg(f"Taranıyor ({current}/{total}): {name}")
+
+    def _on_batch_finished(self):
+        self.scanning = False
+        self.statusbar.set_msg("Toplu tarama tamamlandı.")
+        self.toasts.push("Tarama Bitti", "Tüm dosyalar analiz edildi.", "good")
+        self.refresh_for_path()
 
     def _scan_done(self, api_data: dict = None):
         self.scanning = False

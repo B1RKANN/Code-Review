@@ -29,15 +29,15 @@ async def process_analysis(source_code: str, file_name: str, user_id: ObjectId, 
         suggestions = await llm_service.generate_suggestions(source_code, report)
         
         # 3. Sonucu Veritabanına Kaydet
-        db_report = ReportInDB(
-            user_id=user_id,
-            file_name=file_name,
-            report_data=report,
-            llm_suggestions=suggestions
-        )
-        
-        await db["reports"].insert_one(db_report.model_dump(by_alias=True, exclude={"id"}))
-        print(f"Rapor {file_name} için başarıyla veritabanına kaydedildi.")
+        if db is not None:
+            db_report = ReportInDB(
+                user_id=user_id,
+                file_name=file_name,
+                report_data=report,
+                llm_suggestions=suggestions
+            )
+            await db["reports"].insert_one(db_report.model_dump(by_alias=True, exclude={"id"}))
+            print(f"Rapor {file_name} için başarıyla veritabanına kaydedildi.")
         
     except Exception as e:
         print(f"Arka plan analiz işlemi başarısız oldu: {str(e)}")
@@ -82,85 +82,11 @@ SUPPORTED_EXTENSIONS = {
 }
 
 
-@router.post("/upload")
-async def upload_and_analyze(
+@router.post("/analyze-file", response_model=FileAnalysisResult)
+async def analyze_single_file(
     file: UploadFile = File(...),
     current_user: UserInDB = Security(get_current_user),
     db = Depends(get_db)
-):
-    """
-    Kullanıcıdan gelen kodu kabul edip, analizi çalıştırıp sonucu döner.
-    """
-    file_ext = '.' + file.filename.rsplit('.', 1)[-1] if '.' in file.filename else ''
-    if file_ext not in SUPPORTED_EXTENSIONS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Desteklenmeyen dosya uzantısı. Desteklenen uzantılar: {', '.join(SUPPORTED_EXTENSIONS.keys())}"
-        )
-    
-    content = await file.read()
-    try:
-        source_code = content.decode('utf-8')
-    except UnicodeDecodeError:
-        try:
-            source_code = content.decode('utf-8-sig') # For BOM
-        except UnicodeDecodeError:
-            source_code = content.decode('latin-1', errors='ignore') # Fallback
-
-    language = SUPPORTED_EXTENSIONS.get(file_ext, 'python')
-    
-    # AST analizi sadece Python dosyaları için çalışır
-    # Diğer diller için LLM üzerinden analiz yapılır
-    if language == "python":
-        report = await asyncio.to_thread(ast_engine.analyze_code, source_code, file.filename)
-        suggestions = await llm_service.generate_suggestions(source_code, report, language=language)
-    else:
-        # LLM üzerinden analiz ve önerileri tek bir aşamada halledebiliriz
-        # ya da analiz edip sonra öneri alırız, ancak LLM servisine optimize etmeliyiz.
-        # Şu an optimize ettiğimiz için:
-        report = await llm_service.analyze_code_with_ai(source_code, file.filename, language)
-        suggestions = await llm_service.generate_suggestions(source_code, report, language=language)
-
-    db_report = ReportInDB(
-        user_id=current_user.id,
-        file_name=file.filename,
-        report_data=report,
-        llm_suggestions=suggestions
-    )
-    
-    result = await db["reports"].insert_one(db_report.model_dump(by_alias=True, exclude={"id"}))
-    
-    return {
-        "report_id": str(result.inserted_id),
-        "file_name": file.filename,
-        "report": report,
-        "llm_suggestions": suggestions
-    }
-
-@router.get("/reports", response_model=List[dict])
-async def get_my_reports(
-    skip: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=100),
-    current_user: UserInDB = Security(get_current_user),
-    db = Depends(get_db)
-):
-    """
-    Kullanıcının geçmiş analiz raporlarını listeler.
-    """
-    cursor = db["reports"].find({"user_id": current_user.id}).sort("created_at", -1).skip(skip).limit(limit)
-    reports = await cursor.to_list(length=limit)
-    
-    # _id formatını frontend'in okuyabileceği string'e dönüştür
-    for r in reports:
-        r["id"] = str(r.pop("_id"))
-        r["user_id"] = str(r["user_id"])
-        
-    return reports
-
-
-@router.post("/analyze-file", response_model=FileAnalysisResult)
-async def analyze_single_file(
-    file: UploadFile = File(...)
 ):
     """
     Masaüstü uygulaması için tek bir dosyanın analiz sonuçlarını döndürür.
@@ -183,6 +109,16 @@ async def analyze_single_file(
         report = await asyncio.to_thread(ast_engine.analyze_code, source_code, file_path)
     else:
         report = await llm_service.analyze_code_with_ai(source_code, file_path, language)
+
+    # Raporu DB'ye kaydetme kısmı
+    if db is not None:
+        db_report = ReportInDB(
+            user_id=current_user.id,
+            file_name=file_path,
+            report_data=report,
+            llm_suggestions="" # UI sadece issues'a bakıyor
+        )
+        await db["reports"].insert_one(db_report.model_dump(by_alias=True, exclude={"id"}))
 
     # Score calculation
     score_data = _calculate_scores_from_report(report, language)
@@ -234,7 +170,7 @@ async def analyze_single_file(
 @router.post("/scores", response_model=ProjectScores)
 async def get_scores(
     file: UploadFile = File(...),
-    current_user: UserInDB = Security(get_current_user),
+    current_user: UserInDB = Security(get_current_user)
 ):
     """
     Yüklenen dosyanın skorlarını analiz ederek döner.
@@ -287,7 +223,10 @@ class ChatRequest(BaseModel):
     source_code: str
 
 @router.post("/chat")
-async def chat_about_file(request: ChatRequest):
+async def chat_about_file(
+    request: ChatRequest,
+    current_user: UserInDB = Security(get_current_user)
+):
     """
     Masaüstü uygulamasından gelen chat mesajlarına yanıt üretir.
     """
