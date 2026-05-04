@@ -1,4 +1,8 @@
 import React from 'react'
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { useAuth } from './services/authContext'
+
+// Landing page components
 import Navbar from './components/Navbar'
 import Hero from './components/Hero'
 import LivePreview from './components/LivePreview'
@@ -6,8 +10,12 @@ import FeatureGrid from './components/FeatureGrid'
 import Pricing from './components/Pricing'
 import AuthSection from './components/AuthSection'
 import Footer from './components/Footer'
+import Profile from './components/Profile'
 
-export default function App() {
+// Pages
+import Dashboard from './pages/Dashboard'
+
+function LandingPage() {
   return (
     <div className="relative min-h-screen bg-midnight overflow-x-hidden">
       {/* Background ambient orbs */}
@@ -30,5 +38,41 @@ export default function App() {
         <Footer />
       </div>
     </div>
+  )
+}
+
+function ProtectedRoute({ children }) {
+  const { isAuthenticated, isLoading } = useAuth()
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-midnight flex items-center justify-center">
+        <div className="w-8 h-8 border-2 border-electric border-t-transparent rounded-full animate-spin" />
+      </div>
+    )
+  }
+
+  if (!isAuthenticated) {
+    return <Navigate to="/" replace />
+  }
+
+  return children
+}
+
+export default function App() {
+  return (
+    <BrowserRouter>
+      <Routes>
+        <Route path="/" element={<LandingPage />} />
+        <Route
+          path="/dashboard"
+          element={
+            <ProtectedRoute>
+              <Dashboard />
+            </ProtectedRoute>
+          }
+        />
+      </Routes>
+    </BrowserRouter>
   )
 }
