@@ -108,8 +108,4 @@ npm run dev
 - Make sure MongoDB is running on your computer.
 - You need an OpenAI API key for the AI chat to work.
 
-<<<<<<< HEAD
 Enjoy coding! 🚀
-=======
-Enjoy coding! 🚀
->>>>>>> 87c6b443bb8c585f32bcb9c18bf80c3b9b504987

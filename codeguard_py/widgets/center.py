@@ -1,4 +1,5 @@
 """Orta panel — Skorlar / Kod görünüm toggle + içerikler."""
+import copy
 import os
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer
 from PyQt6.QtGui import QColor, QFont, QTextCursor, QTextBlockFormat
@@ -12,6 +13,113 @@ from icons import make_icon
 from data import FILE_SCORES, FILE_FINDINGS, FILE_SOURCES, FILE_ASIDE, PROJECT
 from widgets.gauge import Gauge
 from widgets.highlighter import PythonHighlighter
+
+_METRIC_KEYS = ("security", "cleanCode", "perf", "robust")
+
+
+def _normalize_score_for_display(score) -> dict:
+    """API veya eksik skor sözlüğünü ScoresView'un beklediği tam yapıya getirir."""
+    default = FILE_SCORES["default"]
+    if not isinstance(score, dict):
+        return copy.deepcopy(default)
+    out = copy.deepcopy(default)
+    if score.get("overall") is not None:
+        try:
+            out["overall"] = int(score["overall"])
+        except (TypeError, ValueError):
+            pass
+    if score.get("status") is not None:
+        out["status"] = str(score["status"])
+    if score.get("statusKind") is not None:
+        out["statusKind"] = str(score["statusKind"])
+    src_m = score.get("metrics")
+    if isinstance(src_m, dict):
+        for k in _METRIC_KEYS:
+            md = src_m.get(k)
+            if not isinstance(md, dict):
+                continue
+            base_m = copy.deepcopy(out["metrics"][k])
+            if md.get("value") is not None:
+                try:
+                    base_m["value"] = int(md["value"])
+                except (TypeError, ValueError):
+                    pass
+            if md.get("label") is not None:
+                base_m["label"] = str(md["label"])
+            if md.get("desc") is not None:
+                base_m["desc"] = str(md["desc"])
+            stats = md.get("stats")
+            norm: list = []
+            if isinstance(stats, list):
+                for s in stats:
+                    if isinstance(s, (list, tuple)) and len(s) >= 2:
+                        norm.append((str(s[0]), str(s[1])))
+                    elif isinstance(s, dict):
+                        norm.append((str(s.get("label", "")), str(s.get("value", ""))))
+            if norm:
+                base_m["stats"] = norm
+            out["metrics"][k] = base_m
+    return out
+
+
+def _normalize_findings(findings) -> list:
+    if not isinstance(findings, list):
+        return []
+    out = []
+    for fi in findings:
+        if not isinstance(fi, dict):
+            continue
+        sev = fi.get("sev", "l")
+        if sev not in ("h", "m", "l"):
+            sev = "l"
+        out.append({
+            "sev": sev,
+            "title": str(fi.get("title", "")),
+            "loc": str(fi.get("loc", "")),
+            "tag": str(fi.get("tag", "")),
+        })
+    return out
+
+
+def _normalize_sources(src) -> list:
+    """API sources (satır, metin, durum) listesini (int, str, str|None) demetlerine çevirir."""
+    if not isinstance(src, list):
+        return []
+    out = []
+    for item in src:
+        if isinstance(item, (list, tuple)) and len(item) >= 2:
+            ln_raw, line = item[0], item[1]
+            st = item[2] if len(item) > 2 else None
+            try:
+                ln = int(ln_raw)
+            except (TypeError, ValueError):
+                ln = len(out) + 1
+            out.append((ln, str(line), st))
+    return out
+
+
+def _normalize_aside(aside_list) -> list:
+    if not isinstance(aside_list, list):
+        return []
+    out = []
+    for a in aside_list:
+        if not isinstance(a, dict):
+            continue
+        sev = a.get("sev", "info")
+        if sev not in ("warn", "bad", "info"):
+            sev = "info"
+        try:
+            line_no = int(a.get("line", 0))
+        except (TypeError, ValueError):
+            line_no = 0
+        out.append({
+            "sev": sev,
+            "line": line_no,
+            "title": str(a.get("title", "")),
+            "desc": str(a.get("desc", "")),
+            "fix": a.get("fix"),
+        })
+    return out
 
 
 # ---------- Skor görünümü ----------
@@ -79,10 +187,10 @@ class ScoresView(QWidget):
         self._overall_gauge = None
 
         if api_data:
-            score = api_data.get("score", FILE_SCORES["default"])
-            findings = api_data.get("findings", [])
-        elif path and os.path.isabs(path):
-            # Gerçek dosya ama henüz taranmamış
+            score = api_data.get("score")
+            findings = api_data.get("findings") or []
+        else:
+            # Gerçek dosya ama henüz taranmamış (Mock verileri kaldır)
             score = {
                 "overall": 0,
                 "status": "Henüz taranmadı",
@@ -95,10 +203,9 @@ class ScoresView(QWidget):
                 }
             }
             findings = []
-        else:
-            # Mock veriler (demo modu için)
-            score = FILE_SCORES.get(path, FILE_SCORES["default"])
-            findings = FILE_FINDINGS.get(path, FILE_FINDINGS["default"])
+
+        score = _normalize_score_for_display(score)
+        findings = _normalize_findings(findings)
 
         # Başlık
         hdr = QHBoxLayout(); hdr.setSpacing(14)
@@ -180,7 +287,10 @@ class ScoresView(QWidget):
         fhl = QHBoxLayout(fh); fhl.setContentsMargins(18, 12, 18, 12)
         ftitle = QLabel("Bulgular")
         ftitle.setStyleSheet(f"font-size:13px; font-weight:600; color:{C.TEXT_1};")
-        fcount = QLabel(f"{len(findings)} aktif · {sum(1 for x in findings if x['sev'] == 'h')} yüksek")
+        fcount = QLabel(
+            f"{len(findings)} aktif · "
+            f"{sum(1 for x in findings if isinstance(x, dict) and x.get('sev') == 'h')} yüksek"
+        )
         fcount.setObjectName("findingsCount")
         fhl.addWidget(ftitle); fhl.addStretch(); fhl.addWidget(fcount)
         fl.addWidget(fh)
@@ -266,64 +376,59 @@ class CodeView(QWidget):
         fname = os.path.basename(path) if path else ""
         self.ftab.setText(f"  {fname}" if fname else "")
 
-        # Gerçek dosya
-        if not api_data and path and os.path.isabs(path) and os.path.isfile(path):
+        # Dosya Okuma
+        if path and os.path.isfile(path):
             try:
                 with open(path, encoding="utf-8", errors="replace") as f:
                     text = f.read()
             except Exception as exc:
                 text = f"# Dosya okunamadı: {exc}"
-            self.edit.setPlainText(text)
-            self._clear_aside()
-            self._aside_layout.addStretch()
-            return
+        else:
+            text = ""
+
+        self.edit.setPlainText(text)
+        self._clear_aside()
 
         if api_data:
-            src = api_data.get("sources", [])
-            aside_list = api_data.get("aside", [])
-        else:
-            src = FILE_SOURCES.get(path, FILE_SOURCES["default"])
-            aside_list = FILE_ASIDE.get(path, FILE_ASIDE["default"])
+            src = _normalize_sources(api_data.get("sources"))
+            aside_list = _normalize_aside(api_data.get("aside"))
+            
+            # API verisi varsa renklendirmeleri yap
+            for ln, _, issue in src:
+                if not issue:
+                    continue
+                block = self.edit.document().findBlockByLineNumber(ln - 1)
+                if not block.isValid():
+                    continue
+                cur = QTextCursor(block)
+                bf = QTextBlockFormat()
+                color = {"warn": C.WARN_SOFT, "bad": C.BAD_SOFT, "info": C.ACCENT_SOFT}.get(issue, C.ACCENT_SOFT)
+                bf.setBackground(QColor(color))
+                cur.setBlockFormat(bf)
 
-        text = "\n".join(line for _, line, _ in src)
-        self.edit.setPlainText(text)
-
-        # Renkli satır arka planları
-        for ln, _, issue in src:
-            if not issue:
-                continue
-            block = self.edit.document().findBlockByLineNumber(ln - 1)
-            if not block.isValid():
-                continue
-            cur = QTextCursor(block)
-            bf = QTextBlockFormat()
-            color = {"warn": C.WARN_SOFT, "bad": C.BAD_SOFT, "info": C.ACCENT_SOFT}[issue]
-            bf.setBackground(QColor(color))
-            cur.setBlockFormat(bf)
-
-        # Aside
-        self._clear_aside()
-        for a in aside_list:
-            box = QFrame(); box.setObjectName("asideIssue")
-            bl = QVBoxLayout(box); bl.setContentsMargins(10, 8, 10, 10); bl.setSpacing(4)
-            color = {"warn": C.WARN, "bad": C.BAD, "info": C.ACCENT}[a["sev"]]
-            box.setStyleSheet(
-                f"QFrame#asideIssue {{ background:{C.BG_2}; border:1px solid {C.BORDER}; "
-                f"border-left:3px solid {color}; border-radius:6px; }}"
-            )
-            head = QHBoxLayout()
-            t = QLabel(a["title"]); t.setObjectName("asideIssueT")
-            l = QLabel(f"L{a['line']}"); l.setObjectName("asideIssueL")
-            head.addWidget(t, 1); head.addWidget(l)
-            bl.addLayout(head)
-            d = QLabel(a["desc"]); d.setObjectName("asideIssueD"); d.setWordWrap(True)
-            bl.addWidget(d)
-            if a.get("fix"):
-                btn = QPushButton(a["fix"]); btn.setObjectName("asideFix")
-                btn.setIcon(make_icon("sparkle", C.TEXT_2, 10))
-                btn.setCursor(Qt.CursorShape.PointingHandCursor)
-                bl.addWidget(btn, 0, Qt.AlignmentFlag.AlignLeft)
-            self._aside_layout.addWidget(box)
+            # Aside (Yan paneli) doldur
+            for a in aside_list:
+                box = QFrame(); box.setObjectName("asideIssue")
+                bl = QVBoxLayout(box); bl.setContentsMargins(10, 8, 10, 10); bl.setSpacing(4)
+                color = {"warn": C.WARN, "bad": C.BAD, "info": C.ACCENT}.get(a["sev"], C.ACCENT)
+                box.setStyleSheet(
+                    f"QFrame#asideIssue {{ background:{C.BG_2}; border:1px solid {C.BORDER}; "
+                    f"border-left:3px solid {color}; border-radius:6px; }}"
+                )
+                head = QHBoxLayout()
+                t = QLabel(a["title"]); t.setObjectName("asideIssueT")
+                l = QLabel(f"L{a['line']}"); l.setObjectName("asideIssueL")
+                head.addWidget(t, 1); head.addWidget(l)
+                bl.addLayout(head)
+                d = QLabel(a["desc"]); d.setObjectName("asideIssueD"); d.setWordWrap(True)
+                bl.addWidget(d)
+                if a.get("fix"):
+                    btn = QPushButton(a["fix"]); btn.setObjectName("asideFix")
+                    btn.setIcon(make_icon("sparkle", C.TEXT_2, 10))
+                    btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                    bl.addWidget(btn, 0, Qt.AlignmentFlag.AlignLeft)
+                self._aside_layout.addWidget(box)
+                
         self._aside_layout.addStretch()
 
     def _clear_aside(self):

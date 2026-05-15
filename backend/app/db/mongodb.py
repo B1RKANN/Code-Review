@@ -1,5 +1,6 @@
 from motor.motor_asyncio import AsyncIOMotorClient
 from app.core.config import settings
+import certifi
 
 class DataBase:
     client: AsyncIOMotorClient = None
@@ -9,7 +10,10 @@ db_instance = DataBase()
 
 async def connect_to_mongo():
     try:
-        db_instance.client = AsyncIOMotorClient(settings.MONGODB_URL, serverSelectionTimeoutMS=2000)
+        db_instance.client = AsyncIOMotorClient(
+            settings.MONGODB_URL, 
+            serverSelectionTimeoutMS=5000
+        )
         db_instance.db = db_instance.client[settings.DATABASE_NAME]
         # Bağlantıyı test et
         await db_instance.client.admin.command('ping')

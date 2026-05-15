@@ -31,6 +31,11 @@ class StatusBar(QFrame):
         lay.addWidget(item(f"@{PROJECT['commit']}"))
         lay.addWidget(item("venv aktif", kind="good", icon="check"))
         lay.addWidget(item(f"python {PROJECT['python']}"))
+        
+        self._msg_label = QLabel("")
+        self._msg_label.setObjectName("sbItem")
+        lay.addWidget(self._msg_label)
+        
         lay.addStretch()
         self._file_label = QLabel("")
         self._file_label.setObjectName("sbItem")
@@ -45,8 +50,12 @@ class StatusBar(QFrame):
         ver = QLabel("CodeGuard 1.2.0"); ver.setObjectName("sbItemHot")
         lay.addWidget(ver)
 
+    def set_msg(self, msg: str):
+        self._msg_label.setText(msg)
+
     def set_score(self, path: str, overall: int):
         self._file_label.setText(path.split("/")[-1])
         c = color_for_score(overall)
         self._score_dot.setStyleSheet(f"background:{c}; border-radius:4px;")
         self._score_lbl.setText(f"skor {overall}")
+

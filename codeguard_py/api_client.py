@@ -25,8 +25,18 @@ def login_user(email: str, password: str) -> Tuple[bool, str]:
             if token:
                 keyring.set_password(SERVICE_NAME, TOKEN_KEY, token)
                 return True, ""
-        err = response.json().get("detail", "Giriş başarısız") if response.content else "Giriş başarısız"
+        
+        try:
+            body = response.json()
+            err = body.get("detail", "Giriş başarısız")
+            if isinstance(err, list):
+                err = str(err)
+        except ValueError:
+            err = (response.text or "").strip() or f"Sunucu hatası ({response.status_code})."
         return False, err
+    except requests.exceptions.RequestException as e:
+        print(f"Login connection error: {e}")
+        return False, "Sunucuya bağlanılamadı."
     except Exception as e:
         print(f"Login error: {e}")
         return False, str(e)
@@ -44,8 +54,18 @@ def register_user(full_name: str, email: str, password: str) -> Tuple[bool, str]
             if token:
                 keyring.set_password(SERVICE_NAME, TOKEN_KEY, token)
                 return True, ""
-        err = response.json().get("detail", "Kayıt başarısız") if response.content else "Kayıt başarısız"
+        
+        try:
+            body = response.json()
+            err = body.get("detail", "Kayıt başarısız")
+            if isinstance(err, list):
+                err = str(err)
+        except ValueError:
+            err = (response.text or "").strip() or f"Sunucu hatası ({response.status_code})."
         return False, err
+    except requests.exceptions.RequestException as e:
+        print(f"Register connection error: {e}")
+        return False, "Sunucuya bağlanılamadı."
     except Exception as e:
         print(f"Register error: {e}")
         return False, str(e)
@@ -55,6 +75,34 @@ def logout_user():
         keyring.delete_password(SERVICE_NAME, TOKEN_KEY)
     except keyring.errors.PasswordDeleteError:
         pass
+
+
+def validate_stored_token() -> Tuple[bool, str]:
+    """
+    Uygulama her açıldığında keyring'deki JWT'yi /auth/me ile doğrular.
+    Dönüş: (True, "") oturum geçerli; (False, "") kayıtlı token yok;
+    (False, mesaj) hata veya geçersiz oturum (401/403'te token silinir).
+    """
+    headers = get_auth_headers()
+    if not headers:
+        return False, ""
+    try:
+        r = requests.get(f"{BACKEND_URL}/auth/me", headers=headers, timeout=15)
+        if r.status_code == 200:
+            return True, ""
+        if r.status_code in (401, 403):
+            logout_user()
+            return False, "Oturumunuz sona erdi veya geçersiz. Lütfen tekrar giriş yapın."
+        try:
+            body = r.json()
+            err = body.get("detail", r.text)
+            if isinstance(err, list):
+                err = str(err)
+        except ValueError:
+            err = (r.text or "").strip() or f"HTTP {r.status_code}"
+        return False, str(err)
+    except requests.exceptions.RequestException:
+        return False, "Sunucuya bağlanılamadı. Backend'in çalıştığından emin olun."
 
 def analyze_file(file_path: str) -> Dict[str, Any]:
     """

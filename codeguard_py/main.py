@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QStackedWidget, QFileDialog, QSplitter,
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QKeySequence, QShortcut
 
 from theme import apply_theme
@@ -24,8 +24,15 @@ from widgets.command_palette import CommandPalette
 from widgets.toast import ToastManager
 from widgets.welcome import WelcomeScreen
 from widgets.auth import AuthScreen
-from data import PROJECT, FILE_TREE, FILE_SCORES
-from api_client import analyze_file, get_auth_headers, logout_user
+from data import (
+    PROJECT,
+    FILE_TREE,
+    FILE_SCORES,
+    FILE_FINDINGS,
+    FILE_SOURCES,
+    FILE_ASIDE,
+)
+from api_client import analyze_file, logout_user
 from PyQt6.QtCore import QThread, pyqtSignal
 
 class ScanWorker(QThread):
@@ -36,29 +43,33 @@ class ScanWorker(QThread):
         self.file_path = file_path
         
     def run(self):
-        result = analyze_file(self.file_path)
-        self.finished.emit(result if result else {})
+        try:
+            result = analyze_file(self.file_path)
+            self.finished.emit(result if result else {})
+        except Exception:
+            self.finished.emit({})
 
 class BatchScanWorker(QThread):
-    progress = pyqtSignal(str, int, int) # dosya_adi, su_anki_index, toplam
-    finished = pyqtSignal()
-    
+    progress = pyqtSignal(str, int, int)  # dosya_adi, su_anki_index, toplam
+    finished = pyqtSignal(object)  # list[tuple[str, dict]] — global dict güncellemesi ana iş parçacığında
+
     def __init__(self, files: list):
         super().__init__()
         self.files = files
-        
+
     def run(self):
         total = len(self.files)
+        batch_results: list = []
         for i, file_path in enumerate(self.files, 1):
-            name = os.path.basename(file_path)
-            self.progress.emit(name, i, total)
-            result = analyze_file(file_path)
-            if result:
-                FILE_SCORES[file_path] = result.get("score")
-                FILE_FINDINGS[file_path] = result.get("findings", [])
-                FILE_SOURCES[file_path] = result.get("sources", [])
-                FILE_ASIDE[file_path] = result.get("aside", [])
-        self.finished.emit()
+            try:
+                name = os.path.basename(file_path)
+                self.progress.emit(name, i, total)
+                result = analyze_file(file_path)
+                if result:
+                    batch_results.append((file_path, result))
+            except Exception:
+                continue
+        self.finished.emit(batch_results)
 
 
 # ---------- Yardımcı ----------
@@ -161,6 +172,8 @@ class CodeGuardWindow(QMainWindow):
         self.view_mode = "scores"
         self.scanning = False
         self._api_cache = {}  # Dosya bazlı tarama sonuçlarını önbellekle
+        # Açık projenin dosya ağacı (sidebar ile aynı); mock için FILE_TREE
+        self._file_tree: list = []
 
         self.toasts = ToastManager(self)
 
@@ -236,19 +249,18 @@ class CodeGuardWindow(QMainWindow):
         QShortcut(QKeySequence("Ctrl+B"), self, activated=self.toggle_sidebar)
         QShortcut(QKeySequence("Ctrl+J"), self, activated=self.toggle_chat)
 
-        # Başlangıç durumu
+        # Başlangıç: her çalıştırmada önce giriş ekranı (otomatik /auth/me ile atlama yok)
         self._check_auth_status()
 
     def _check_auth_status(self):
-        token = get_auth_headers().get("Authorization")
-        if token:
-            self._stack.setCurrentIndex(0) # Hoş geldin
-        else:
-            self._stack.setCurrentIndex(2) # Auth sayfası
+        self._stack.setCurrentIndex(2)  # Auth
+
+    def _go_to_welcome_after_auth(self):
+        self._stack.setCurrentIndex(0)
+        self.toasts.push("Giriş Başarılı", "Sisteme başarıyla giriş yaptınız.", "success")
 
     def on_login_success(self):
-        self._stack.setCurrentIndex(0) # Hoş geldin sayfasına geç
-        self.toasts.push("Giriş Başarılı", "Sisteme başarıyla giriş yaptınız.", "success")
+        self._go_to_welcome_after_auth()
 
     def on_logout_requested(self):
         logout_user()
@@ -264,13 +276,13 @@ class CodeGuardWindow(QMainWindow):
     # ---------- Yükleme modları ----------
 
     def load_mock_data(self):
+        self._file_tree = FILE_TREE
         self.sidebar.load_project(FILE_TREE, PROJECT)
         self._project_name = PROJECT["name"]
         self._project_root = None
         self.active_path = "app/api/webhooks.py"
         self.refresh_for_path()
         self._show_editor()
-        from PyQt6.QtCore import QTimer
         QTimer.singleShot(500, lambda: self.toasts.push(
             "Tarama hazır", "Dosyaya tıklayarak skorlarını gör", kind="info"
         ))
@@ -289,6 +301,7 @@ class CodeGuardWindow(QMainWindow):
             self.on_file_selected(path)
             return
         tree = [{"type": "file", "name": name, "abs_path": path, "score": None, "lines": 0}]
+        self._file_tree = tree
         self.sidebar.load_project(tree, {"name": name})
         self._project_name = name
         self._project_root = os.path.dirname(path)
@@ -303,6 +316,7 @@ class CodeGuardWindow(QMainWindow):
             return
         folder = os.path.normpath(folder)
         tree = _build_file_tree(folder)
+        self._file_tree = tree
         folder_name = os.path.basename(folder) or folder
         self.sidebar.load_project(tree, {"name": folder_name})
         self._project_name = folder_name
@@ -324,6 +338,7 @@ class CodeGuardWindow(QMainWindow):
     def close_folder(self):
         self._project_name = ""
         self._project_root = None
+        self._file_tree = []
         self.active_path = ""
         self._api_cache.clear()
         self.setWindowTitle("CodeGuard")
@@ -375,6 +390,7 @@ class CodeGuardWindow(QMainWindow):
         self.file_worker_reload.start()
 
     def _on_file_tree_reloaded(self, tree: list):
+        self._file_tree = tree
         folder_name = os.path.basename(self._project_root)
         self.sidebar.load_project(tree, {"name": folder_name})
         self.toasts.push("Klasör güncellendi", f"{self._count_files(tree)} dosya", kind="info")
@@ -394,8 +410,12 @@ class CodeGuardWindow(QMainWindow):
         
         api_data = self._api_cache.get(self.active_path)
         if api_data:
-            score = api_data.get("score", FILE_SCORES["default"])
+            score = api_data.get("score")
+            if not isinstance(score, dict):
+                score = FILE_SCORES["default"]
             overall = score.get("overall", 0)
+            if overall is None:
+                overall = 0
         elif self._project_root is not None:
             # Gerçek proje modu
             overall = 0
@@ -413,31 +433,38 @@ class CodeGuardWindow(QMainWindow):
         if not self.active_path:
             self.toasts.push("Hata", "Taranacak dosya seçilmedi.", "warn")
             return
-            
-        if self.scanning: return
-        self.scanning = True
-        
-        # Eğer bir klasör açıksa, o klasördeki tüm Python/JS dosyalarını topla
-        files_to_scan = []
-        if self._project_root:
-            files_to_scan = self._get_all_files(FILE_TREE)
-        
-        if len(files_to_scan) > 1:
-            self.statusbar.set_msg("Toplu tarama başlatıldı...")
-            self.toasts.push("Tarama Başladı", f"{len(files_to_scan)} dosya taranıyor...", "info")
-            self.center.set_scanning(True) # Yükleniyor durumu
-            
-            self.batch_worker = BatchScanWorker(files_to_scan)
-            self.batch_worker.progress.connect(self._on_batch_progress)
-            self.batch_worker.finished.connect(self._on_batch_finished)
-            self.batch_worker.start()
-        else:
-            self.statusbar.set_msg(f"Taranıyor: {os.path.basename(self.active_path)}")
-            self.center.set_scanning(True)
-            
-            self._worker = ScanWorker(self.active_path)
-            self._worker.finished.connect(self._scan_done)
-            self._worker.start()
+
+        if self.scanning:
+            return
+
+        try:
+            self.scanning = True
+
+            # Eğer bir klasör açıksa, o klasördeki tüm Python/JS dosyalarını topla
+            files_to_scan = []
+            if self._project_root:
+                files_to_scan = self._get_all_files(self._file_tree)
+
+            if len(files_to_scan) > 1:
+                self.statusbar.set_msg("Toplu tarama başlatıldı...")
+                self.toasts.push("Tarama Başladı", f"{len(files_to_scan)} dosya taranıyor...", "info")
+                self.center.set_scanning(True)
+
+                self.batch_worker = BatchScanWorker(files_to_scan)
+                self.batch_worker.progress.connect(self._on_batch_progress)
+                self.batch_worker.finished.connect(self._on_batch_finished)
+                self.batch_worker.start()
+            else:
+                self.statusbar.set_msg(f"Taranıyor: {os.path.basename(self.active_path)}")
+                self.center.set_scanning(True)
+
+                self._worker = ScanWorker(self.active_path)
+                self._worker.finished.connect(self._scan_done)
+                self._worker.start()
+        except Exception as exc:
+            self.scanning = False
+            self.center.set_scanning(False)
+            self.toasts.push("Tarama hatası", str(exc), "warn")
 
     def _get_all_files(self, nodes: list) -> list:
         files = []
@@ -445,7 +472,9 @@ class CodeGuardWindow(QMainWindow):
             if n["type"] == "file":
                 ext = os.path.splitext(n["name"])[1].lower()
                 if ext in ['.py', '.js', '.ts', '.jsx', '.tsx']: # Desteklenen diller
-                    files.append(n["abs_path"])
+                    p = n.get("abs_path")
+                    if p and os.path.isfile(p):
+                        files.append(p)
             elif n["type"] == "folder":
                 files.extend(self._get_all_files(n.get("children", [])))
         return files
@@ -453,8 +482,23 @@ class CodeGuardWindow(QMainWindow):
     def _on_batch_progress(self, name: str, current: int, total: int):
         self.statusbar.set_msg(f"Taranıyor ({current}/{total}): {name}")
 
-    def _on_batch_finished(self):
+    def _on_batch_finished(self, batch_results):
+        """batch_results: list of (file_path, result_dict) — iş parçacığı güvenliği için güncelleme burada."""
+        try:
+            for file_path, result in batch_results or []:
+                if not isinstance(result, dict):
+                    continue
+                sc = result.get("score")
+                if sc is not None:
+                    FILE_SCORES[file_path] = sc
+                FILE_FINDINGS[file_path] = result.get("findings") or []
+                FILE_SOURCES[file_path] = result.get("sources") or []
+                FILE_ASIDE[file_path] = result.get("aside") or []
+                self._api_cache[file_path] = result
+        except Exception as exc:
+            self.toasts.push("Tarama sonuçları işlenemedi", str(exc), "warn")
         self.scanning = False
+        self.center.set_scanning(False)
         self.statusbar.set_msg("Toplu tarama tamamlandı.")
         self.toasts.push("Tarama Bitti", "Tüm dosyalar analiz edildi.", "good")
         self.refresh_for_path()
@@ -462,16 +506,22 @@ class CodeGuardWindow(QMainWindow):
     def _scan_done(self, api_data: dict = None):
         self.scanning = False
         self.center.set_scanning(False)
-        
+
         if api_data:
             self._api_cache[self.active_path] = api_data
-            self.center.set_active(self.active_path, api_data)
-            score = api_data.get("score", {})
-            self.statusbar.set_score(self.active_path, score.get("overall", 0))
-            self.toasts.push("Tarama tamamlandı", "Skorlar gerçek verilerle güncellendi", kind="good")
+            try:
+                self.center.set_active(self.active_path, api_data)
+                score = api_data.get("score")
+                overall = 0
+                if isinstance(score, dict):
+                    overall = score.get("overall", 0) or 0
+                self.statusbar.set_score(self.active_path, int(overall) if overall is not None else 0)
+                self.toasts.push("Tarama tamamlandı", "Skorlar gerçek verilerle güncellendi", kind="good")
+            except Exception as exc:
+                self.toasts.push("Sonuç gösterilemedi", str(exc), "warn")
         else:
-            self.center.replay_animations()
             self.toasts.push("Tarama başarısız", "Sunucudan veri alınamadı veya hata oluştu", kind="bad")
+            self.refresh_for_path()
 
     def open_command_palette(self):
         if self._stack.currentIndex() != 1:
